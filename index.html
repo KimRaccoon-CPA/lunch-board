@@ -5,6 +5,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
 <title>점심 현황</title>
+<!-- 봇·LINE 서버와 미리 연결해 두기(첫 요청의 연결 준비 시간을 화면이 뜨는 동안 처리 — 2026-11-05) -->
+<link rel="preconnect" href="https://script.google.com" crossorigin>
+<link rel="preconnect" href="https://script.googleusercontent.com" crossorigin>
+<link rel="preconnect" href="https://static.line-scdn.net">
+<link rel="preconnect" href="https://api.line.me" crossorigin>
 <style>
   body{font-family:-apple-system,"Apple SD Gothic Neo","Malgun Gothic",sans-serif;margin:0;padding:16px;background:#f6f7f9;color:#212529}
   /* PC LINE 은 미니 화면을 큰 브라우저 탭으로 연다 → 내용을 휴대폰 폭으로 가운데 모음(2026-11-05) */
@@ -116,7 +121,100 @@
   }
 
   // ───────── 2) 📱 미니 화면(LIFF) ─────────
-  var mini = { d: '', r: '', busy: false };
+  // 미니 화면 순서(2026-11-05 '명단 불러오는 중…' 5초 개선):
+  //   열리자마자 ① 명단만 먼저 가져오기(op=liffview, 그날 암호 t) + ② LINE 기능 불러와 로그인 확인 → 저장(op=liff)
+  //   ①이 오면 명단을 먼저 보여 주고(로그인이 끝났으면 내 이름도 얹어서), ②가 끝나면 최종 화면으로 바꾼다.
+  var mini = { d: '', r: '', busy: false, q: null, view: null, final: null, myName: '' };
+  // 어디서 얼마나 걸렸나(화면이 열린 뒤 ms) — 저장이 끝나면 봇에 숫자만 보냄(op=liffdiag)
+  var diag = { start: Math.round(performance.now()) };
+
+  function mark(k) { diag[k] = Math.round(performance.now()); }
+
+  function sendDiag(extra) {
+    try {
+      var nav = performance.getEntriesByType ? performance.getEntriesByType('navigation')[0] : null;
+      if (nav) diag.nav = Math.round(nav.responseEnd);
+      for (var k in extra) diag[k] = extra[k];
+      var body = JSON.stringify(diag);
+      var url = API + '?op=liffdiag';
+      if (navigator.sendBeacon && navigator.sendBeacon(url, body)) return;
+      fetch(url, { method: 'POST', body: body, credentials: 'omit', keepalive: true, headers: { 'Content-Type': 'text/plain;charset=utf-8' } });
+    } catch (e) { /* 진단 실패는 무시 */ }
+  }
+
+  function instantText(a, s) {
+    return a === 'rate' ? '✅ ⭐' + s + ' 저장 — 여기 다녀온 걸로 남겼어요' : a === 'unlike' ? '✅ 👍 취소했어요' : '✅ 👍 좋아요 했어요';
+  }
+
+  /** 식당 카드(이름·메뉴·👍 명단·⭐ 명단) */
+  function cardEl(rest, likes, visits) {
+    var c = el('div', 'card');
+    c.appendChild(el('div', 'name', rest.name));
+    if (rest.meta) c.appendChild(el('div', 'meta', rest.meta));
+    if (rest.main) c.appendChild(el('div', 'main', '🍱 ' + rest.main));
+    var lk = el('div', 'row');
+    lk.appendChild(el('span', 'cnt', '👍 ' + likes.length));
+    lk.appendChild(likes.length ? document.createTextNode(likes.join(' · ')) : el('span', 'muted', '아직 없음'));
+    c.appendChild(lk);
+    if (visits.length) {
+      var vs = el('div', 'row');
+      vs.appendChild(el('span', 'cnt', '⭐ ' + visits.length));
+      vs.appendChild(document.createTextNode(visits.join(' · ')));
+      c.appendChild(vs);
+    }
+    return c;
+  }
+
+  /** 저장 결과가 오기 전: 먼저 받은 명단 + (로그인 확인됐으면) 내가 누른 것을 얹어 보여 줌 */
+  function showPreview() {
+    if (mini.final || !mini.view) return;
+    var v = mini.view;
+    var a = mini.q.get('a');
+    var s = mini.q.get('s');
+    var me = mini.myName;
+    var likes = v.likes.slice();
+    var visits = v.visits.slice();
+    if (me) {
+      if (a === 'like' && likes.indexOf(me) === -1) likes.push(me);
+      if (a === 'unlike') likes = likes.filter(function (n) { return n !== me; });
+      if (a === 'rate') {
+        visits = visits.filter(function (x) { return x.split(' ⭐')[0] !== me; });
+        visits.push(me + ' ⭐' + s);
+      }
+    }
+    app.textContent = '';
+    if (a !== 'view') app.appendChild(el('div', 'done', instantText(a, s)));
+    app.appendChild(cardEl(v.restaurant, likes, visits));
+    app.appendChild(el('div', 'lbl', a === 'view' ? '불러오는 중…' : '저장 확인 중… 잠시만요'));
+  }
+
+  function loadView(q) {
+    var t = q.get('t');
+    if (!t) return; // 예전 카드(암호 없음)는 저장 결과를 기다림
+    fetch(API + '?op=liffview&d=' + encodeURIComponent(mini.d) + '&r=' + encodeURIComponent(mini.r) + '&t=' + encodeURIComponent(t), { credentials: 'omit' })
+      .then(function (r) { return r.json(); })
+      .then(function (v) {
+        mark('view');
+        if (v && v.ok) {
+          mini.view = v;
+          showPreview();
+        }
+      })
+      .catch(function () { /* 먼저 보기 실패는 무시(저장 결과로 보여 줌) */ });
+  }
+
+  /** 같은 버튼으로 연 화면이 몇 번째 열린 건지(LINE 이 주소를 바꿔 다시 여는지 확인용) */
+  function loadCount(q) {
+    try {
+      var sig = [q.get('a'), q.get('d'), q.get('r'), q.get('s')].join('|');
+      var prev = JSON.parse(sessionStorage.getItem('liffLoad') || 'null');
+      var n = prev && prev.sig === sig && Date.now() - prev.at < 20000 ? prev.n + 1 : 1;
+      sessionStorage.setItem('liffLoad', JSON.stringify({ sig: sig, at: Date.now(), n: n }));
+      return n;
+    } catch (e) {
+      return 0;
+    }
+  }
 
   function inLine() {
     try { return !!(window.liff && liff.isInClient()); } catch (e) { return false; }
@@ -135,12 +233,13 @@
     }, 300);
   }
 
-  function act(a, s) {
+  function act(a, s, initial) {
     if (mini.busy) return;
     mini.busy = true;
     var token = null;
     try { token = liff.getIDToken(); } catch (e) { token = null; }
     if (!token) { showMini({ ok: false, error: 'LINE 로그인이 필요해요. LINE 앱에서 카드 버튼으로 열어 주세요.' }); mini.busy = false; return; }
+    if (initial) mark('post');
     fetch(API + '?op=liff', {
       method: 'POST',
       credentials: 'omit',
@@ -148,8 +247,18 @@
       body: JSON.stringify({ idToken: token, a: a, d: mini.d, r: mini.r, s: s || '' })
     })
       .then(function (r) { return r.json(); })
-      .then(showMini)
-      .catch(function () { showMini({ ok: false, error: '저장하지 못했어요. 잠시 후 다시 눌러 주세요.' }); })
+      .then(function (res) {
+        if (initial) {
+          mark('resp');
+          sendDiag({ ok: !!(res && res.ok), server: res && res._ms ? res._ms.total : undefined });
+        }
+        mini.final = res;
+        showMini(res);
+      })
+      .catch(function () {
+        if (initial) sendDiag({ ok: false });
+        showMini({ ok: false, error: '저장하지 못했어요. 잠시 후 다시 눌러 주세요.' });
+      })
       .then(function () { mini.busy = false; });
   }
 
@@ -163,21 +272,7 @@
       return;
     }
     if (res.message) app.appendChild(el('div', 'done', '✅ ' + res.message));
-    var c = el('div', 'card');
-    c.appendChild(el('div', 'name', res.restaurant.name));
-    if (res.restaurant.meta) c.appendChild(el('div', 'meta', res.restaurant.meta));
-    if (res.restaurant.main) c.appendChild(el('div', 'main', '🍱 ' + res.restaurant.main));
-    var lk = el('div', 'row');
-    lk.appendChild(el('span', 'cnt', '👍 ' + res.likes.length));
-    lk.appendChild(res.likes.length ? document.createTextNode(res.likes.join(' · ')) : el('span', 'muted', '아직 없음'));
-    c.appendChild(lk);
-    if (res.visits.length) {
-      var vs = el('div', 'row');
-      vs.appendChild(el('span', 'cnt', '⭐ ' + res.visits.length));
-      vs.appendChild(document.createTextNode(res.visits.join(' · ')));
-      c.appendChild(vs);
-    }
-    app.appendChild(c);
+    app.appendChild(cardEl(res.restaurant, res.likes, res.visits));
 
     var acts = el('div', 'acts');
     if (res.canLike) {
@@ -211,11 +306,9 @@
 
   /** 저장을 기다리지 않고 바로 보여 주는 화면(2026-11-05: '저장하는 중…' 빈 화면이 5초) — 실패하면 오류 화면으로 바뀜 */
   function showInstant(q) {
-    var a = q.get('a');
-    var s = q.get('s');
     var name = q.get('n') || '';
     app.textContent = '';
-    app.appendChild(el('div', 'done', a === 'rate' ? '✅ ⭐' + s + ' 저장 — 여기 다녀온 걸로 남겼어요' : a === 'unlike' ? '✅ 👍 취소했어요' : '✅ 👍 좋아요 했어요'));
+    app.appendChild(el('div', 'done', instantText(q.get('a'), q.get('s'))));
     var c = el('div', 'card');
     if (name) c.appendChild(el('div', 'name', name));
     c.appendChild(el('div', 'row muted', '명단 불러오는 중…'));
@@ -223,23 +316,41 @@
   }
 
   function startMini(q) {
+    mini.q = q;
     mini.d = q.get('d') || '';
     mini.r = q.get('r') || '';
     var lid = q.get('lid') || '';
+    var firstOpen = !!new URLSearchParams(location.search).get('liff.state');
+    diag.a = q.get('a') || '';
+    diag.first = firstOpen;
+    diag.hadT = !!q.get('t');
+    diag.loads = loadCount(q);
+    // 주소 # 뒤 항목 '이름'만(값은 안 봄) — LINE 이 로그인 정보를 처음부터 주는지 확인용
+    diag.hashKeys = location.hash ? location.hash.slice(1).split('&').map(function (kv) { return kv.split('=')[0]; }).join(',') : '';
     if (q.get('a') === 'view') {
       app.textContent = '';
       app.appendChild(el('p', 'muted', '불러오는 중…'));
     } else {
       showInstant(q);
     }
+    loadView(q); // ① 명단 먼저(로그인 확인을 기다리지 않음)
     var s = document.createElement('script');
     s.src = 'https://static.line-scdn.net/liff/edge/2/sdk.js';
     s.onload = function () {
+      mark('sdk');
       liff.init({ liffId: lid }).then(function () {
+        mark('init');
+        diag.inClient = inLine();
+        try { diag.os = liff.getOS(); } catch (e) { /* 없음 */ }
         if (!liff.isLoggedIn()) { liff.login({ redirectUri: location.href }); return; }
         // liff.state 로 처음 열렸으면 SDK 가 진짜 주소로 다시 옮겨 준다 — 그때 다시 실행됨
-        if (new URLSearchParams(location.search).get('liff.state')) return;
-        act(q.get('a') || 'view', q.get('s'));
+        if (new URLSearchParams(location.search).get('liff.state')) { sendDiag({ via: 'redirect' }); return; }
+        try {
+          var dec = liff.getDecodedIDToken();
+          mini.myName = (dec && dec.name) || '';
+        } catch (e) { mini.myName = ''; }
+        showPreview(); // 명단이 먼저 와 있으면 내 이름을 얹어 다시 그림
+        act(q.get('a') || 'view', q.get('s'), true); // ② 저장
       }).catch(function () { showMini({ ok: false, error: '미니 화면을 열지 못했어요. 창을 닫고 다시 눌러 주세요.' }); });
     };
     s.onerror = function () { showMini({ ok: false, error: 'LINE 기능을 불러오지 못했어요. 잠시 후 다시 눌러 주세요.' }); };
