@@ -209,12 +209,29 @@
     if (!inLine()) app.appendChild(el('div', 'hint', 'PC 에서는 브라우저 탭으로 열려요. 다 보셨으면 탭을 닫아 주세요.'));
   }
 
+  /** 저장을 기다리지 않고 바로 보여 주는 화면(2026-11-05: '저장하는 중…' 빈 화면이 5초) — 실패하면 오류 화면으로 바뀜 */
+  function showInstant(q) {
+    var a = q.get('a');
+    var s = q.get('s');
+    var name = q.get('n') || '';
+    app.textContent = '';
+    app.appendChild(el('div', 'done', a === 'rate' ? '✅ ⭐' + s + ' 저장 — 여기 다녀온 걸로 남겼어요' : a === 'unlike' ? '✅ 👍 취소했어요' : '✅ 👍 좋아요 했어요'));
+    var c = el('div', 'card');
+    if (name) c.appendChild(el('div', 'name', name));
+    c.appendChild(el('div', 'row muted', '명단 불러오는 중…'));
+    app.appendChild(c);
+  }
+
   function startMini(q) {
     mini.d = q.get('d') || '';
     mini.r = q.get('r') || '';
     var lid = q.get('lid') || '';
-    app.textContent = '';
-    app.appendChild(el('p', 'muted', '저장하는 중…'));
+    if (q.get('a') === 'view') {
+      app.textContent = '';
+      app.appendChild(el('p', 'muted', '불러오는 중…'));
+    } else {
+      showInstant(q);
+    }
     var s = document.createElement('script');
     s.src = 'https://static.line-scdn.net/liff/edge/2/sdk.js';
     s.onload = function () {
