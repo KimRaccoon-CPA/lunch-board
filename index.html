@@ -124,7 +124,7 @@
   // 미니 화면 순서(2026-11-05 '명단 불러오는 중…' 5초 개선):
   //   열리자마자 ① 명단만 먼저 가져오기(op=liffview, 그날 암호 t) + ② LINE 기능 불러와 로그인 확인 → 저장(op=liff)
   //   ①이 오면 명단을 먼저 보여 주고(로그인이 끝났으면 내 이름도 얹어서), ②가 끝나면 최종 화면으로 바꾼다.
-  var mini = { d: '', r: '', busy: false, q: null, view: null, final: null, myName: '' };
+  var mini = { d: '', r: '', busy: false, ready: false, q: null, view: null, final: null, myName: '' };
   // 어디서 얼마나 걸렸나(화면이 열린 뒤 ms) — 저장이 끝나면 봇에 숫자만 보냄(op=liffdiag)
   var diag = { start: Math.round(performance.now()) };
 
@@ -233,11 +233,14 @@
     }, 300);
   }
 
-  function act(a, s, initial) {
+  /** 저장 보내기. token 을 주면 그걸로(LINE 이 처음 연 주소에 붙여 준 로그인 정보), 없으면 LINE 기능에서 꺼냄 */
+  function act(a, s, initial, token, after) {
     if (mini.busy) return;
+    if (!token && !mini.ready) return; // LINE 기능이 아직 안 켜졌을 때 누른 버튼(곧 다시 그려짐)
     mini.busy = true;
-    var token = null;
-    try { token = liff.getIDToken(); } catch (e) { token = null; }
+    if (!token) {
+      try { token = liff.getIDToken(); } catch (e) { token = null; }
+    }
     if (!token) { showMini({ ok: false, error: 'LINE 로그인이 필요해요. LINE 앱에서 카드 버튼으로 열어 주세요.' }); mini.busy = false; return; }
     if (initial) mark('post');
     fetch(API + '?op=liff', {
@@ -252,14 +255,102 @@
           mark('resp');
           sendDiag({ ok: !!(res && res.ok), server: res && res._ms ? res._ms.total : undefined });
         }
+        mini.busy = false;
+        // 처음 주소의 로그인 정보가 봇에서 확인 안 되면(code=auth) 오류를 보이지 않고 예전 방식으로 다시(after 가 처리)
+        if (after && res && !res.ok && res.code === 'auth') { after(null, 'auth'); return; }
         mini.final = res;
         showMini(res);
+        if (after) after(res);
       })
       .catch(function () {
+        mini.busy = false;
         if (initial) sendDiag({ ok: false });
+        if (after) { after(null, 'net'); return; }
         showMini({ ok: false, error: '저장하지 못했어요. 잠시 후 다시 눌러 주세요.' });
-      })
-      .then(function () { mini.busy = false; });
+      });
+  }
+
+  // ── LINE 이 화면을 두 번 여는 문제(2026-11-05 실측: 처음 주소 ?liff.state=… 로 연 뒤 진짜 주소로 다시 엶) ──
+  // 처음 연 주소 # 뒤에 로그인 정보(id_token)가 있으면 다시 열리기를 기다리지 않고 바로 저장을 보낸다.
+  // 저장이 끝나면 결과를 맡겨 두고 LINE 기능을 켠다 → 다시 열린 화면은 맡겨 둔 결과를 바로 보여 줌(저장 다시 안 함).
+  // 로그인 정보가 없으면 예전처럼(다시 열린 뒤 저장). 봇은 로그인 정보를 LINE 에 물어 확인하므로 가짜는 통하지 않음.
+  function hashToken() {
+    try { return new URLSearchParams(location.hash.slice(1)).get('id_token') || ''; } catch (e) { return ''; }
+  }
+
+  /** 로그인 정보 안의 이름(보여 주기용 — 확인은 봇이 함) */
+  function tokenName(tok) {
+    try {
+      var p = tok.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+      while (p.length % 4) p += '=';
+      var bin = atob(p);
+      var bytes = new Uint8Array(bin.length);
+      for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      return JSON.parse(new TextDecoder('utf-8').decode(bytes)).name || '';
+    } catch (e) {
+      return '';
+    }
+  }
+
+  function stashKey(q) { return 'liffDone|' + [q.get('a'), q.get('d'), q.get('r'), q.get('s')].join('|'); }
+
+  function stash(q, res) {
+    try { if (res) sessionStorage.setItem(stashKey(q), JSON.stringify({ at: Date.now(), res: res })); } catch (e) { /* 없음 */ }
+  }
+
+  /** 다시 열린 화면: 처음 화면이 맡겨 둔 결과(60초 안, 한 번만 꺼냄) */
+  function unstash(q) {
+    try {
+      var k = stashKey(q);
+      var v = JSON.parse(sessionStorage.getItem(k) || 'null');
+      sessionStorage.removeItem(k);
+      return v && Date.now() - v.at < 60000 ? v.res : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // 처음 주소의 로그인 정보가 봇에서 거절된 적이 있으면 이 휴대폰에서는 예전 방식만(매번 돌아가느라 느려지지 않게)
+  function earlyOff() {
+    try { return localStorage.getItem('liffNoEarly') === '1'; } catch (e) { return false; }
+  }
+
+  function setEarlyOff() {
+    try { localStorage.setItem('liffNoEarly', '1'); } catch (e) { /* 없음 */ }
+  }
+
+  /** LINE 기능 파일 받기(한 번만) */
+  var sdkPromise = null;
+  function fetchSdk() {
+    if (!sdkPromise) {
+      sdkPromise = new Promise(function (ok, fail) {
+        var s = document.createElement('script');
+        s.src = 'https://static.line-scdn.net/liff/edge/2/sdk.js';
+        s.onload = function () { mark('sdk'); ok(); };
+        s.onerror = fail;
+        document.head.appendChild(s);
+      });
+    }
+    return sdkPromise;
+  }
+
+  /** LINE 기능 켜기. then(firstOpen) — 처음 주소면 SDK 가 진짜 주소로 다시 열기도 함 */
+  function loadSdk(lid, then) {
+    fetchSdk().then(function () {
+      return liff.init({ liffId: lid }).then(function () {
+        mark('init');
+        diag.inClient = inLine();
+        try { diag.os = liff.getOS(); } catch (e) { /* 없음 */ }
+        if (!liff.isLoggedIn()) { liff.login({ redirectUri: location.href }); return; }
+        then(!!new URLSearchParams(location.search).get('liff.state'));
+      }, function () { if (!mini.final) showMini({ ok: false, error: '미니 화면을 열지 못했어요. 창을 닫고 다시 눌러 주세요.' }); });
+    }, function () { if (!mini.final) showMini({ ok: false, error: 'LINE 기능을 불러오지 못했어요. 잠시 후 다시 눌러 주세요.' }); });
+  }
+
+  /** LINE 기능이 켜짐 → 버튼이 동작하게 다시 그림 */
+  function setReady() {
+    mini.ready = true;
+    if (mini.final) showMini(mini.final);
   }
 
   function showMini(res) {
@@ -273,6 +364,11 @@
     }
     if (res.message) app.appendChild(el('div', 'done', '✅ ' + res.message));
     app.appendChild(cardEl(res.restaurant, res.likes, res.visits));
+    if (!mini.ready) {
+      // 저장은 끝났고 LINE 기능을 켜는 중(1초 안쪽) — 그동안 버튼은 안 보여 줌(눌러도 동작 안 해서)
+      app.appendChild(el('div', 'lbl', '버튼 준비 중…'));
+      return;
+    }
 
     var acts = el('div', 'acts');
     if (res.canLike) {
@@ -327,34 +423,55 @@
     diag.loads = loadCount(q);
     // 주소 # 뒤 항목 '이름'만(값은 안 봄) — LINE 이 로그인 정보를 처음부터 주는지 확인용
     diag.hashKeys = location.hash ? location.hash.slice(1).split('&').map(function (kv) { return kv.split('=')[0]; }).join(',') : '';
-    if (q.get('a') === 'view') {
+    var a = q.get('a') || 'view';
+    // 다시 열린 화면: 처음 화면이 이미 저장하고 맡겨 둔 결과가 있으면 그대로 보여 주고 LINE 기능만 켬
+    var done = firstOpen ? null : unstash(q);
+    if (done) {
+      diag.via = 'stash';
+      mini.final = done;
+      showMini(done);
+      loadSdk(lid, setReady);
+      return;
+    }
+    if (a === 'view') {
       app.textContent = '';
       app.appendChild(el('p', 'muted', '불러오는 중…'));
     } else {
       showInstant(q);
     }
     loadView(q); // ① 명단 먼저(로그인 확인을 기다리지 않음)
-    var s = document.createElement('script');
-    s.src = 'https://static.line-scdn.net/liff/edge/2/sdk.js';
-    s.onload = function () {
-      mark('sdk');
-      liff.init({ liffId: lid }).then(function () {
-        mark('init');
-        diag.inClient = inLine();
-        try { diag.os = liff.getOS(); } catch (e) { /* 없음 */ }
-        if (!liff.isLoggedIn()) { liff.login({ redirectUri: location.href }); return; }
-        // liff.state 로 처음 열렸으면 SDK 가 진짜 주소로 다시 옮겨 준다 — 그때 다시 실행됨
-        if (new URLSearchParams(location.search).get('liff.state')) { sendDiag({ via: 'redirect' }); return; }
-        try {
-          var dec = liff.getDecodedIDToken();
-          mini.myName = (dec && dec.name) || '';
-        } catch (e) { mini.myName = ''; }
-        showPreview(); // 명단이 먼저 와 있으면 내 이름을 얹어 다시 그림
-        act(q.get('a') || 'view', q.get('s'), true); // ② 저장
-      }).catch(function () { showMini({ ok: false, error: '미니 화면을 열지 못했어요. 창을 닫고 다시 눌러 주세요.' }); });
+    // 예전 방식: LINE 기능을 켜고(처음 주소면 SDK 가 다시 열어 줌) 다시 열린 화면에서 저장
+    var normal = function (stillFirst) {
+      if (stillFirst) return; // liff.state 로 처음 열렸으면 SDK 가 진짜 주소로 다시 옮겨 준다 — 그때 다시 실행됨
+      mini.ready = true;
+      try {
+        var dec = liff.getDecodedIDToken();
+        mini.myName = (dec && dec.name) || '';
+      } catch (e) { mini.myName = ''; }
+      showPreview(); // 명단이 먼저 와 있으면 내 이름을 얹어 다시 그림
+      act(a, q.get('s'), true); // ② 저장
     };
-    s.onerror = function () { showMini({ ok: false, error: 'LINE 기능을 불러오지 못했어요. 잠시 후 다시 눌러 주세요.' }); };
-    document.head.appendChild(s);
+    var early = firstOpen && !earlyOff() ? hashToken() : '';
+    diag.early = !!early;
+    if (early) {
+      // ② 처음 화면에서 바로 저장 → 끝나면 결과를 맡겨 두고 LINE 기능을 켬(SDK 가 다시 열면 맡긴 결과로 바로 보임)
+      // LINE 기능 파일은 지금 같이 받아 두고, 켜기(init — 다시 열기가 일어남)만 저장이 끝난 뒤에
+      mini.myName = tokenName(early);
+      showPreview();
+      fetchSdk().catch(function () { /* 켤 때 다시 알림 */ });
+      act(a, q.get('s'), true, early, function (res, why) {
+        if (res) {
+          stash(q, res); // 결과(오류 포함)를 맡겨 두면 다시 열린 화면이 그대로 보여 줌
+          loadSdk(lid, setReady);
+        } else {
+          if (why === 'auth') setEarlyOff(); // 로그인 정보가 안 통하는 휴대폰 → 다음부터 예전 방식
+          loadSdk(lid, normal); // 이번엔 예전 방식으로 다시
+        }
+      });
+      return;
+    }
+    if (firstOpen) sendDiag({ via: 'first-noearly' }); // 로그인 정보가 처음 주소에 없음 → 예전 방식(기록만 남김)
+    loadSdk(lid, normal);
   }
 
   var q0 = params();
