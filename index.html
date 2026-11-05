@@ -18,12 +18,25 @@
   .muted{color:#adb5bd}
   .foot{color:#adb5bd;font-size:12px;margin-top:16px;text-align:center}
   button{margin-top:10px;border:0;background:#e9ecef;border-radius:8px;padding:8px 14px;font-size:14px}
+  /* 미니 화면(👍·⭐ 누르면 뜨는 창) */
+  .done{font-size:18px;font-weight:700;color:#2f9e44;margin:2px 0 10px}
+  .err{font-size:15px;color:#e03131;margin:8px 0}
+  .acts{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
+  .acts button{margin:0;flex:1;min-width:80px}
+  .primary{background:#06c755;color:#fff;font-weight:600}
+  .stars{display:flex;gap:6px;justify-content:center;margin-top:10px}
+  .stars button{margin:0;width:40px;padding:8px 0}
+  .stars .on{background:#ffd43b;font-weight:700}
+  .lbl{font-size:12px;color:#868e96;text-align:center;margin-top:12px}
+  a.link{display:block;text-align:center;margin-top:12px;color:#42659a;font-size:14px;text-decoration:none}
 </style>
 </head>
 <body>
 <!--
-  점심봇 '👥 좋아요 현황' 화면(보기 전용). 이 파일에는 이름·데이터가 없다.
-  카드 버튼 주소의 ?d=날짜&t=그날 암호 로 봇(Apps Script)에서 그날 현황만 가져온다(구글 로그인 무관).
+  점심봇 화면 두 가지(이 파일에는 이름·데이터가 없다):
+  1) 👥 좋아요 현황(보기 전용): ?d=날짜&t=그날 암호 → 봇(Apps Script)에서 그날 현황만 가져옴(구글 로그인 무관)
+  2) 📱 미니 화면(LIFF): 카드의 👍·⭐ → https://liff.line.me/{LIFF ID}?a=like|rate&d=&r=&s=&lid=
+     LINE 로그인으로 누가 눌렀는지 확인 → 봇이 저장 → '저장됐어요' + 그 식당 명단. 채팅엔 아무것도 안 올라감
   정본: KimRaccoon-CPA/lunch-bot 의 board/index.html → scripts/publish_board.py 로 이 저장소에 올림.
 -->
 <div id="app"><p class="muted">불러오는 중…</p></div>
@@ -38,7 +51,19 @@
     return e;
   }
 
-  function show(data) {
+  // 주소 값 읽기 — LIFF 첫 열림은 ?liff.state=%3Fa%3D… 안에 들어 있다
+  function params() {
+    var q = new URLSearchParams(location.search);
+    var st = q.get('liff.state');
+    if (st) {
+      var inner = new URLSearchParams(st.replace(/^[^?]*\?/, ''));
+      inner.forEach(function (v, k) { if (!q.has(k)) q.set(k, v); });
+    }
+    return q;
+  }
+
+  // ───────── 1) 👥 좋아요 현황 ─────────
+  function showBoard(data) {
     app.textContent = '';
     if (!data || !data.ok) {
       app.appendChild(el('p', 'muted', (data && data.error) || '불러오지 못했어요. 잠시 후 다시 열어 주세요.'));
@@ -66,27 +91,129 @@
     });
     var foot = el('div', 'foot', '👍·⭐ 는 단체방 카드 버튼으로');
     var again = el('button', '', '새로고침');
-    again.onclick = load;
+    again.onclick = loadBoard;
     foot.appendChild(document.createElement('br'));
     foot.appendChild(again);
     app.appendChild(foot);
   }
 
-  function load() {
-    var q = new URLSearchParams(location.search);
+  function loadBoard() {
+    var q = params();
     var d = q.get('d') || '';
     var t = q.get('t') || '';
-    if (!d || !t) { show({ ok: false, error: '주소가 올바르지 않아요. 카드의 👥 좋아요 현황 버튼으로 열어 주세요.' }); return; }
+    if (!d || !t) { showBoard({ ok: false, error: '주소가 올바르지 않아요. 카드의 👥 좋아요 현황 버튼으로 열어 주세요.' }); return; }
     app.textContent = '';
     app.appendChild(el('p', 'muted', '불러오는 중…'));
     // credentials: 'omit' — 구글 로그인(여러 계정)과 상관없이 열리게
     fetch(API + '?op=boarddata&d=' + encodeURIComponent(d) + '&t=' + encodeURIComponent(t), { credentials: 'omit' })
       .then(function (r) { return r.json(); })
-      .then(show)
-      .catch(function () { show({ ok: false, error: '불러오지 못했어요. 잠시 후 다시 열어 주세요.' }); });
+      .then(showBoard)
+      .catch(function () { showBoard({ ok: false, error: '불러오지 못했어요. 잠시 후 다시 열어 주세요.' }); });
   }
 
-  load();
+  // ───────── 2) 📱 미니 화면(LIFF) ─────────
+  var mini = { d: '', r: '', busy: false };
+
+  function closeMini() {
+    try { if (window.liff && liff.isInClient()) { liff.closeWindow(); return; } } catch (e) { /* 밖의 브라우저 */ }
+    window.close();
+  }
+
+  function act(a, s) {
+    if (mini.busy) return;
+    mini.busy = true;
+    var token = null;
+    try { token = liff.getIDToken(); } catch (e) { token = null; }
+    if (!token) { showMini({ ok: false, error: 'LINE 로그인이 필요해요. LINE 앱에서 카드 버튼으로 열어 주세요.' }); mini.busy = false; return; }
+    fetch(API + '?op=liff', {
+      method: 'POST',
+      credentials: 'omit',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' }, // 미리 묻는 요청(preflight) 없이 보내려고
+      body: JSON.stringify({ idToken: token, a: a, d: mini.d, r: mini.r, s: s || '' })
+    })
+      .then(function (r) { return r.json(); })
+      .then(showMini)
+      .catch(function () { showMini({ ok: false, error: '저장하지 못했어요. 잠시 후 다시 눌러 주세요.' }); })
+      .then(function () { mini.busy = false; });
+  }
+
+  function showMini(res) {
+    app.textContent = '';
+    if (!res || !res.ok) {
+      app.appendChild(el('div', 'err', '⚠️ ' + ((res && res.error) || '문제가 생겼어요.')));
+      var c0 = el('button', '', '닫기');
+      c0.onclick = closeMini;
+      app.appendChild(c0);
+      return;
+    }
+    if (res.message) app.appendChild(el('div', 'done', '✅ ' + res.message));
+    var c = el('div', 'card');
+    c.appendChild(el('div', 'name', res.restaurant.name));
+    if (res.restaurant.meta) c.appendChild(el('div', 'meta', res.restaurant.meta));
+    if (res.restaurant.main) c.appendChild(el('div', 'main', '🍱 ' + res.restaurant.main));
+    var lk = el('div', 'row');
+    lk.appendChild(el('span', 'cnt', '👍 ' + res.likes.length));
+    lk.appendChild(res.likes.length ? document.createTextNode(res.likes.join(' · ')) : el('span', 'muted', '아직 없음'));
+    c.appendChild(lk);
+    if (res.visits.length) {
+      var vs = el('div', 'row');
+      vs.appendChild(el('span', 'cnt', '⭐ ' + res.visits.length));
+      vs.appendChild(document.createTextNode(res.visits.join(' · ')));
+      c.appendChild(vs);
+    }
+    app.appendChild(c);
+
+    var acts = el('div', 'acts');
+    if (res.canLike) {
+      var lb = el('button', res.myLike ? '' : 'primary', res.myLike ? '👍 취소' : '👍 좋아요');
+      lb.onclick = function () { act(res.myLike ? 'unlike' : 'like'); };
+      acts.appendChild(lb);
+    }
+    var cb = el('button', '', '닫기');
+    cb.onclick = closeMini;
+    acts.appendChild(cb);
+    app.appendChild(acts);
+
+    var here = res.myVisit && res.myVisit.here ? res.myVisit.rating : null;
+    app.appendChild(el('div', 'lbl', here ? '여기 다녀왔어요 ⭐' + here + ' · 바꾸려면 다시 누르기' : '여기 다녀왔다면 별점 ⭐'));
+    if (res.myVisit && !res.myVisit.here) app.appendChild(el('div', 'lbl', '(지금은 ' + res.myVisit.restaurantName + ' 다녀온 걸로 남아 있어요 — 누르면 여기로 바뀌어요)'));
+    var stars = el('div', 'stars');
+    [1, 2, 3, 4, 5].forEach(function (s) {
+      var b = el('button', here === s ? 'on' : '', String(s));
+      b.onclick = function () { act('rate', s); };
+      stars.appendChild(b);
+    });
+    app.appendChild(stars);
+
+    if (res.boardUrl) {
+      var a = el('a', 'link', '👥 오늘 전체 현황 보기');
+      a.href = res.boardUrl;
+      app.appendChild(a);
+    }
+  }
+
+  function startMini(q) {
+    mini.d = q.get('d') || '';
+    mini.r = q.get('r') || '';
+    var lid = q.get('lid') || '';
+    app.textContent = '';
+    app.appendChild(el('p', 'muted', '저장하는 중…'));
+    var s = document.createElement('script');
+    s.src = 'https://static.line-scdn.net/liff/edge/2/sdk.js';
+    s.onload = function () {
+      liff.init({ liffId: lid }).then(function () {
+        if (!liff.isLoggedIn()) { liff.login({ redirectUri: location.href }); return; }
+        // liff.state 로 처음 열렸으면 SDK 가 진짜 주소로 다시 옮겨 준다 — 그때 다시 실행됨
+        if (new URLSearchParams(location.search).get('liff.state')) return;
+        act(q.get('a') || 'view', q.get('s'));
+      }).catch(function () { showMini({ ok: false, error: '미니 화면을 열지 못했어요. 창을 닫고 다시 눌러 주세요.' }); });
+    };
+    s.onerror = function () { showMini({ ok: false, error: 'LINE 기능을 불러오지 못했어요. 잠시 후 다시 눌러 주세요.' }); };
+    document.head.appendChild(s);
+  }
+
+  var q0 = params();
+  if (q0.get('a') && q0.get('lid')) startMini(q0); else loadBoard();
 </script>
 </body>
 </html>
