@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>점심 현황</title>
+<style>
+  body{font-family:-apple-system,"Apple SD Gothic Neo","Malgun Gothic",sans-serif;margin:0;padding:16px;background:#f6f7f9;color:#212529}
+  h1{font-size:18px;margin:0 0 4px}
+  .sub{color:#868e96;font-size:13px;margin-bottom:14px}
+  .card{background:#fff;border-radius:12px;padding:12px 14px;margin-bottom:10px;box-shadow:0 1px 2px rgba(0,0,0,.06)}
+  .name{font-weight:700;font-size:16px}
+  .meta{color:#868e96;font-size:12px;margin-top:2px}
+  .main{color:#e8590c;font-weight:600;font-size:14px;margin-top:4px}
+  .row{font-size:14px;margin-top:6px}
+  .cnt{display:inline-block;min-width:44px;font-weight:700}
+  .muted{color:#adb5bd}
+  .foot{color:#adb5bd;font-size:12px;margin-top:16px;text-align:center}
+  button{margin-top:10px;border:0;background:#e9ecef;border-radius:8px;padding:8px 14px;font-size:14px}
+</style>
+</head>
+<body>
+<!--
+  점심봇 '👥 좋아요 현황' 화면(보기 전용). 이 파일에는 이름·데이터가 없다.
+  카드 버튼 주소의 ?d=날짜&t=그날 암호 로 봇(Apps Script)에서 그날 현황만 가져온다(구글 로그인 무관).
+  정본: KimRaccoon-CPA/lunch-bot 의 board/index.html → scripts/publish_board.py 로 이 저장소에 올림.
+-->
+<div id="app"><p class="muted">불러오는 중…</p></div>
+<script>
+  var API = 'https://script.google.com/macros/s/AKfycbyouGrTsGqrLcDqhK400AIYkKyMtQm1GeciHzf72Zk0g7gSbyqEeopLrI_BTwN6UnevJQ/exec';
+  var app = document.getElementById('app');
+
+  function el(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined) e.textContent = text; // 이름은 글자로만(코드가 끼어들 틈 없음)
+    return e;
+  }
+
+  function show(data) {
+    app.textContent = '';
+    if (!data || !data.ok) {
+      app.appendChild(el('p', 'muted', (data && data.error) || '불러오지 못했어요. 잠시 후 다시 열어 주세요.'));
+      return;
+    }
+    app.appendChild(el('h1', '', data.title));
+    app.appendChild(el('div', 'sub', data.sub));
+    if (!data.items.length) app.appendChild(el('p', 'muted', '아직 오늘 후보가 없어요. 단체방에 "점심" 이라고 불러 보세요.'));
+    data.items.forEach(function (it) {
+      var c = el('div', 'card');
+      c.appendChild(el('div', 'name', it.name));
+      if (it.meta) c.appendChild(el('div', 'meta', it.meta));
+      if (it.main) c.appendChild(el('div', 'main', '🍱 ' + it.main));
+      var lk = el('div', 'row');
+      lk.appendChild(el('span', 'cnt', '👍 ' + it.likes.length));
+      lk.appendChild(it.likes.length ? document.createTextNode(it.likes.join(' · ')) : el('span', 'muted', '아직 없음'));
+      c.appendChild(lk);
+      if (it.visits.length) {
+        var vs = el('div', 'row');
+        vs.appendChild(el('span', 'cnt', '⭐ ' + it.visits.length));
+        vs.appendChild(document.createTextNode(it.visits.join(' · ')));
+        c.appendChild(vs);
+      }
+      app.appendChild(c);
+    });
+    var foot = el('div', 'foot', '👍·⭐ 는 단체방 카드 버튼으로');
+    var again = el('button', '', '새로고침');
+    again.onclick = load;
+    foot.appendChild(document.createElement('br'));
+    foot.appendChild(again);
+    app.appendChild(foot);
+  }
+
+  function load() {
+    var q = new URLSearchParams(location.search);
+    var d = q.get('d') || '';
+    var t = q.get('t') || '';
+    if (!d || !t) { show({ ok: false, error: '주소가 올바르지 않아요. 카드의 👥 좋아요 현황 버튼으로 열어 주세요.' }); return; }
+    app.textContent = '';
+    app.appendChild(el('p', 'muted', '불러오는 중…'));
+    // credentials: 'omit' — 구글 로그인(여러 계정)과 상관없이 열리게
+    fetch(API + '?op=boarddata&d=' + encodeURIComponent(d) + '&t=' + encodeURIComponent(t), { credentials: 'omit' })
+      .then(function (r) { return r.json(); })
+      .then(show)
+      .catch(function () { show({ ok: false, error: '불러오지 못했어요. 잠시 후 다시 열어 주세요.' }); });
+  }
+
+  load();
+</script>
+</body>
+</html>
