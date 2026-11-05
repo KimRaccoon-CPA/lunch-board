@@ -253,7 +253,7 @@
       .then(function (res) {
         if (initial) {
           mark('resp');
-          sendDiag({ ok: !!(res && res.ok), server: res && res._ms ? res._ms.total : undefined });
+          sendDiag({ ok: !!(res && res.ok), server: res && res._ms ? res._ms.total : undefined, sv: res && res._ms ? JSON.stringify(res._ms) : '' });
         }
         mini.busy = false;
         // 처음 주소의 로그인 정보가 봇에서 확인 안 되면(code=auth) 오류를 보이지 않고 예전 방식으로 다시(after 가 처리)
