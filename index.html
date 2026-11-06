@@ -124,7 +124,7 @@
   // 미니 화면 순서(2026-11-05 '명단 불러오는 중…' 5초 개선):
   //   열리자마자 ① 명단만 먼저 가져오기(op=liffview, 그날 암호 t) + ② LINE 기능 불러와 로그인 확인 → 저장(op=liff)
   //   ①이 오면 명단을 먼저 보여 주고(로그인이 끝났으면 내 이름도 얹어서), ②가 끝나면 최종 화면으로 바꾼다.
-  var mini = { d: '', r: '', busy: false, ready: false, q: null, view: null, final: null, myName: '' };
+  var mini = { d: '', r: '', vo: false, busy: false, ready: false, q: null, view: null, final: null, myName: '' };
   // 어디서 얼마나 걸렸나(화면이 열린 뒤 ms) — 저장이 끝나면 봇에 숫자만 보냄(op=liffdiag)
   var diag = { start: Math.round(performance.now()) };
 
@@ -143,6 +143,7 @@
   }
 
   function instantText(a, s) {
+    if (mini.vo) return '🧪 시험방 카드 — 눌러도 저장하지 않아요';
     return a === 'rate' ? '✅ ⭐' + s + ' 저장 — 여기 다녀온 걸로 남겼어요' : a === 'unlike' ? '✅ 👍 취소했어요' : '✅ 👍 좋아요 했어요';
   }
 
@@ -171,7 +172,7 @@
     var v = mini.view;
     var a = mini.q.get('a');
     var s = mini.q.get('s');
-    var me = mini.myName;
+    var me = mini.vo ? '' : mini.myName; // 🧪 시험방 카드는 저장 안 하니 내 이름을 얹지 않음
     var likes = v.likes.slice();
     var visits = v.visits.slice();
     if (me) {
@@ -247,7 +248,7 @@
       method: 'POST',
       credentials: 'omit',
       headers: { 'Content-Type': 'text/plain;charset=utf-8' }, // 미리 묻는 요청(preflight) 없이 보내려고
-      body: JSON.stringify({ idToken: token, a: a, d: mini.d, r: mini.r, s: s || '' })
+      body: JSON.stringify({ idToken: token, a: a, d: mini.d, r: mini.r, s: s || '', vo: mini.vo ? '1' : '' })
     })
       .then(function (r) { return r.json(); })
       .then(function (res) {
@@ -414,6 +415,7 @@
   function startMini(q) {
     mini.q = q;
     mini.d = q.get('d') || '';
+    mini.vo = q.get('vo') === '1'; // 🧪 시험방 카드(보기 전용)
     mini.r = q.get('r') || '';
     var lid = q.get('lid') || '';
     var firstOpen = !!new URLSearchParams(location.search).get('liff.state');
